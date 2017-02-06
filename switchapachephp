@@ -88,8 +88,12 @@ then
 	then 
 		lineNumber=$(grep -n -m 1 "^#*LoadModule php[0-9]_module.*" $apacheConf | cut -d ":" -f 1)
 		sed -i -e "${lineNumber} i\ 
-			#currentPHP=$newVersion
+			\\
+    	    # loading PHP modules \\
+			#currentPHP=$newVersion \\
     		" $apacheConf
+    	# delete any conflicting LoadModule php... lines
+    	sed -i -e "/^#*LoadModule php[0-9]_module.*/ d" $apacheConf
     else
     	lineNumber=$(grep -n "^#*LoadModule.*" $apacheConf | tail -1 | cut -d ":" -f 1)
     	sed -i -e "${lineNumber} a\ 
