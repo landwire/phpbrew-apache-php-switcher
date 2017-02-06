@@ -1,0 +1,148 @@
+#!/bin/bash
+
+function getPhpVersions() {
+	# using process substitution <(command_list) to create the array globally - no subshell is used
+	# basically a temporary file is created and used as the input for the other command
+	# echo <(ls) -> echos the filename and cat <(ls) shows the contents of this file
+	# helpful to use commands which expect file input and to not create a subshell
+	# http://wiki.bash-hackers.org/syntax/expansion/proc_subst
+	while read -r line;  do  
+			# substring expansion
+			# ${string/search/replace} only first occurence
+			# ${string//search/replace} all occurences
+			#http://wiki.bash-hackers.org/syntax/pe?s[]=substring&s[]=extraction#substring_expansion
+      		line=${line/\* /}
+	      	line=${line/php-/}
+	        phpVersions+=("$line")
+	done < <(phpbrew list)
+}
+
+function updateHttpdConf() {
+	# variables for newversion
+			# substring expansion
+			# NOTE: can only be used on variables and without the $ in front!
+			# ${string:start:length} - string="Hello World" ${string:0:5} "HELLO" - ${string:(-1):(-5} "World"
+			# ${string:start} - ${string:7} "orld"
+			#http://wiki.bash-hackers.org/syntax/pe?s[]=substring&s[]=extraction#substring_expansion
+	local newVersionMajor=${newVersion:0:1}
+	local currentApachePhpMajor=${currentApachePhp:0:1}
+
+	# adds a hashtag in front of the all lines with the LoadModule php
+	sed -i -e "/LoadModule php[0-9]_module .*/s/^#*/#/" $apacheConf
+
+	#checks if the new version exists and uncomments it otherwise will add the line for phpbrew php
+	if grep "#LoadModule php[0-9]_module .*php${newVersion}" $apacheConf > /dev/null
+    then
+        sed -i -e "/LoadModule php[0-9]_module .*php${newVersion}/s/^#//" $apacheConf
+    else
+    	# sed on mac requires a space after the a\ so it must be "a\ " and not only "a\"!!!!
+    	sed -i -e "/^#currentPHP=.*/a\ 
+    	LoadModule php${newVersionMajor}_module libexec/libphp${newVersion}.so
+    	" $apacheConf
+    fi
+
+    # update currentapachePHP version
+   	sed -i -e "s/^#currentPHP=.*/#currentPHP=${newVersion}/" $apacheConf
+   	# restart apache
+    echo "Restarting apache..."
+	sudo apachectl restart
+	echo "Apache restarted."
+	echo "Successfully switched to Apache PHP version $newversion."
+	# open webbrowser window with php config data
+	read -p "Would you like to open the phpinfo in a browser window? (y/n)? " answer
+	case ${answer:0:1} in
+	    y|Y )
+			# check if we have a phpinfo.php file in the docroot - if not create one
+			docRoot=$(grep -i '^DocumentRoot.*' $apacheConf | grep -o '".*"' | tr -d '"')
+			if [ ! -f /${docRoot}/phpinfo.php ]
+			then
+				# create the phpinfo.php file
+				touch /${docRoot}/phpinfo.php
+				echo "<?php phpinfo();" > /${docRoot}/phpinfo.php
+			fi
+
+			# open the file in a browser
+	        open http://localhost/phpinfo.php
+	    ;;
+	    * )
+	        # dont do anything
+	    ;;
+	esac
+}
+
+# start of actual script
+
+#declaring global variables
+declare -a phpVersions=()
+declare newVersion="$1"
+declare apacheConf=$(httpd -V | grep -i server_config_file | cut -d '"' -f 2)
+declare currentApachePhp=$(grep "#currentPHP=.*" ${apacheConf} | cut -f2- -d=)
+
+# create the array of php versions
+getPhpVersions
+
+# check for our marker "#currentPHP=..." in the apache config file and if it does not exist add it
+if ! grep "#currentPHP=.*" $apacheConf > /dev/null
+then
+	if grep -n -m 1 "^#*LoadModule php[0-9]_module.*" $apacheConf > /dev/null
+	then 
+		lineNumber=$(grep -n -m 1 "^#*LoadModule php[0-9]_module.*" $apacheConf | cut -d ":" -f 1)
+		sed -i -e "${lineNumber} i\ 
+			#currentPHP=$newVersion
+    		" $apacheConf
+    else
+    	lineNumber=$(grep -n "^#*LoadModule.*" $apacheConf | tail -1 | cut -d ":" -f 1)
+    	sed -i -e "${lineNumber} a\ 
+    		\\
+    	    # loading PHP modules \\
+			#currentPHP=$newVersion \\
+    		" $apacheConf
+    fi
+fi
+
+# Check if command was ran as root.
+if [[ $(id -u) -eq 0 ]]; then
+    echo "The command \"switchapachephp\" should not be executed as root or via sudo directly."
+    echo "When a service during this script requires root access, you will be prompted for a password as needed."
+    exit 1
+fi
+
+# Usage
+if [ $# -ne 1 ]; then
+    echo "Usage: switchapachephp [phpversion]"
+	echo "The currently used PHP version is: $currentApachePhp"
+	echo "You can choose from the following PHP versions:"
+    for i in "${phpVersions[@]}"
+      do
+      	echo $i
+      done
+
+    exit 1
+fi
+
+if [[ ! " ${phpVersions[@]} " =~ " ${newVersion} " ]]; then
+    # whatever you want to do when arr contains value
+    echo "Sorry, the PHP version $newVersion is not available."
+    echo "Please choose another PHP version or use phpbrew to install the required one."
+    echo "Apache currently uses PHP version: $currentApachePhp"
+    echo "You can choose from the following PHP versions:"
+    for i in "${phpVersions[@]}"
+      do
+      	echo $i
+      done
+elif [[ " ${currentApachePhp} " = " ${newVersion} " ]]; then
+	read -p "Apache is already using the PHP version $newVersion. Would you like to restart Apache anyway? (y/n)? " answer
+	case ${answer:0:1} in
+	    y|Y )
+	        echo "Restarting apache..."
+	        sudo apachectl restart
+	        echo "Apache restarted."
+	    ;;
+	    * )
+	        # dont do anything
+	    ;;
+	esac
+else
+	echo "Updating entries in httpd.conf to use version $newVersion..."
+	updateHttpdConf
+fi
